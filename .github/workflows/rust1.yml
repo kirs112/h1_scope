@@ -1,140 +1,214 @@
-# The way this works is the following:
-#
-# The create-release job runs purely to initialize the GitHub release itself
-# and to output upload_url for the following job.
-#
-# The build-release job runs only once create-release is finished. It gets the
-# release upload URL from create-release job outputs, then builds the release
-# executables for each supported platform and attaches them as release assets
-# to the previously created release.
-#
-# The key here is that we create the release only once.
-#
-# Reference:
-# https://eugene-babichenko.github.io/blog/2020/05/09/github-actions-cross-platform-auto-releases/
-
 name: Rust1
+
 on:
-  workflow_call:
-  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    tags:
+      - "v*.*.*" # 当推送符合模式v*.*.*的标签时触发工作流
+  pull_request:
+    branches: [ "main" ]
 
 env:
-  BIN_NAME: h1_asserts
+  CARGO_TERM_COLOR: always
+
+
 jobs:
-  build-release:
-    name: build-release
+  build:
+    runs-on: ${{ matrix.os }} # 定义作业运行的操作系统
     strategy:
-      fail-fast: false
       matrix:
-        build: [linux, macos, macos_m1, win-msvc, linux-arm-v7, linux-aarch64]
-        include:
-          - build: linux
-            os: ubuntu-latest
-            rust: stable
-            target: x86_64-unknown-linux-musl
-            file: h1_asserts_amd64
-          - build: macos
-            os: macos-latest
-            rust: stable
-            target: x86_64-apple-darwin
-            file: h1_asserts_darwin
-          - build: macos_m1
-            os: macos-latest
-            rust: stable
-            target: aarch64-apple-darwin
-            file: h1_asserts_aarch64_darwin
-          - build: win-msvc
-            os: windows-latest
-            rust: stable
-            target: i686-pc-windows-msvc
-            file: h1_asserts.exe
-          - build: linux-arm-v7
-            os: ubuntu-latest
-            rust: stable
-            target: armv7-unknown-linux-gnueabihf
-            file: h1_asserts_armv7
-          - build: linux-aarch64
-            os: ubuntu-latest
-            rust: stable
-            target: aarch64-unknown-linux-gnu
-            file: h1_asserts_aarch64
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, macos-latest, windows-latest] # 定义操作系统矩阵
+        arch: [x86_64, aarch64] # 定义架构矩阵
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v2 # 检出仓库代码
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1 # 设置Rust工具链
         with:
-          fetch-depth: 1
-      - name: Cache
-        uses: Swatinem/rust-cache@v1
-      - name: Install packages (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib xz-utils liblz4-tool libc6-dev libssl-dev musl-tools pkg-config patchelf
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
-          sed -i -e "s/^version = .*/version = \"`date +'%-Y.%-m.%-d'`\"/" h1_asserts/Cargo.toml
-          sed -i -e "s/\"h1_asserts version\"/\"h1_asserts v`date +'%-Y.%-m.%-d'`\"/" h1_asserts/src/cli.rs
-      - name: Cache Choco
-        if: matrix.os == 'windows-latest'
-        uses: actions/cache@v4
+          toolchain: stable # 使用稳定版Rust工具链
+          profile: minimal # 使用最小化配置文件
+          override: true # 覆盖任何现有的Rust工具链设置
+
+      - name: Build project
+        run: cargo build --release # 构建项目的发布版本
+
+      # 上传Linux x86_64平台的构建产物
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
         with:
-          path: ${{ github.workspace }}\choco-cache
-          key: ${{ runner.os }}-temp-cache
-      - name: Install packages (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          choco config set cacheLocation "${{ github.workspace }}\choco-cache"
-          choco install llvm openssl
-          export CARGO_PKG_VERSION=`date +'%-Y.%-m.%-d'`
-          sed -i -e "s/^version = .*/version = \"`date +'%-Y.%-m.%-d'`\"/" h1_asserts/Cargo.toml
-          sed -i -e "s/\"h1_asserts version\"/\"h1_asserts v`date +'%-Y.%-m.%-d'`\"/" h1_asserts/src/cli.rs
-          echo "CARGO_PKG_VERSION=`date +'%Y.%m.%d'`" >>$GITHUB_ENV
-          echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >>$GITHUB_ENV
-          echo "RUSTFLAGS=-C target-feature=+crt-static" >>$GITHUB_ENV
-      - name: Install packages (Macos)
-        if: matrix.os == 'macos-latest'
-        run: |
-          sed -i -e "s/^version = .*/version = \"`date +'%-Y.%-m.%-d'`\"/" h1_asserts/Cargo.toml
-          sed -i -e "s/\"h1_asserts version\"/\"h1_asserts v`date +'%-Y.%-m.%-d'`\"/" h1_asserts/src/cli.rs
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+          name: ubuntu-latest-h1_asserts
+          path: target/release/h1_asserts
+
+      # 上传Linux aarch64平台的构建产物
+      - name: Upload artifact (Linux aarch64)
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64'
+        uses: actions/upload-artifact@v4
         with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
-      - name: Build release binary
-        run: cargo build --target ${{ matrix.target }} --verbose --release
-      - name: Build archive
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            bin_file="target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe"
-            echo "BIN_FILE=$bin_file" >> $GITHUB_ENV
-          else
-            bin_file="target/${{ matrix.target }}/release/${{ env.BIN_NAME }}"
-            echo "BIN_FILE=$bin_file" >> $GITHUB_ENV
-          fi
-      - name: Install Cargo deb (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo install cargo-deb
-          cargo deb --target ${{ matrix.target }} --output target/${{ matrix.target }}/debian/h1_asserts_${{ matrix.target }}.deb
-      - name: Upload deb to release
-        if: matrix.os == 'ubuntu-latest'
-        uses: svenstaro/upload-release-action@v1-release
+          name: ubuntu-latest-h1_asserts-aarch64
+          path: target/release/h1_asserts
+
+      # 上传macOS x86_64平台的构建产物
+      - name: Upload artifact (macOS)
+        if: matrix.os == 'macos-latest' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/${{ matrix.target }}/debian/h1_asserts_${{ matrix.target }}.deb
-          asset_name: observer-ward_${{ matrix.target }}.deb
-          tag: defaultv4
-          overwrite: true
-      - name: Upload binary to release
-        uses: svenstaro/upload-release-action@v1-release
+          name: macos-latest-h1_asserts
+          path: target/release/h1_asserts
+
+      # 上传macOS aarch64平台的构建产物
+      - name: Upload artifact (macOS aarch64)
+        if: matrix.os == 'macos-latest' && matrix.arch == 'aarch64'
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ env.BIN_FILE }}
-          asset_name: ${{ matrix.file }}
-          tag: defaultv4
-          overwrite: true
+          name: macos-latest-h1_asserts-aarch64
+          path: target/release/h1_asserts
+
+      # 上传Windows x86_64平台的构建产物
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-latest-h1_asserts
+          path: target/release/h1_asserts.exe
+
+      # 上传Windows aarch64平台的构建产物
+      - name: Upload artifact (Windows aarch64)
+        if: matrix.os == 'windows-latest' && matrix.arch == 'aarch64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-latest-h1_asserts-aarch64
+          path: target/release/h1_asserts.exe
+
+  release:
+    runs-on: ubuntu-latest # 定义作业运行在Ubuntu系统上
+    needs: build # 依赖于build作业
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2 # 检出仓库代码
+
+      # 下载Linux x86_64平台的构建产物
+      - name: Download artifact (Linux-x86_64)
+        uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-latest-h1_asserts
+          path: artifacts/ubuntu
+
+      # 下载macOS x86_64平台的构建产物
+      - name: Download artifact (macOS-x86_64)
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-latest-h1_asserts
+          path: artifacts/macos
+
+      # 下载Windows x86_64平台的构建产物
+      - name: Download artifact (Windows-x86_64)
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-latest-h1_asserts
+          path: artifacts/windows
+
+      # 下载Linux aarch64平台的构建产物
+      - name: Download artifact (Linux-aarch64)
+        uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-latest-h1_asserts-aarch64
+          path: artifacts/ubuntu
+
+      # 下载macOS aarch64平台的构建产物
+      - name: Download artifact (macOS-aarch64)
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-latest-h1_asserts-aarch64
+          path: artifacts/macos
+
+      # 下载Windows aarch64平台的构建产物
+      - name: Download artifact (Windows-aarch64)
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-latest-h1_asserts-aarch64
+          path: artifacts/windows
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1 # 创建GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          tag_name: ${{ github.ref_name }} # 仅获取标签名
+          release_name: "Release ${{ github.ref_name }}"
+          body: |
+            Changes in this Release
+            - First Change
+            - Second Change # 发布说明
+          draft: false # 是否为草稿
+          prerelease: false # 是否为预发布
+
+      # 上传Linux x86_64平台的构建产物到发布页面
+      - name: Upload Linux x86_64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/ubuntu/h1_asserts # 上传的文件路径
+          asset_name: h1_asserts-linux-x86_64 # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
+
+      # 上传macOS x86_64平台的构建产物到发布页面
+      - name: Upload macOS x86_64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/macos/h1_asserts # 上传的文件路径
+          asset_name: h1_asserts-macos-x86_64 # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
+
+      # 上传Windows x86_64平台的构建产物到发布页面
+      - name: Upload Windows x86_64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/windows/h1_asserts.exe # 上传的文件路径
+          asset_name: h1_asserts-windows-x86_64.exe # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
+
+      # 上传Linux aarch64平台的构建产物到发布页面
+      - name: Upload Linux aarch64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/ubuntu/h1_asserts # 上传的文件路径
+          asset_name: h1_asserts-linux-aarch64 # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
+
+      # 上传macOS aarch64平台的构建产物到发布页面
+      - name: Upload macOS aarch64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/macos/h1_asserts # 上传的文件路径
+          asset_name: h1_asserts-macos-aarch64 # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
+
+      # 上传Windows aarch64平台的构建产物到发布页面
+      - name: Upload Windows aarch64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # 使用创建发布步骤生成的上传URL
+          asset_path: artifacts/windows/h1_asserts.exe # 上传的文件路径
+          asset_name: h1_asserts-windows-aarch64.exe # 上传的文件名
+          asset_content_type: application/octet-stream # 文件内容类型
