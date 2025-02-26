@@ -10,7 +10,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-
 permissions:
   contents: write
 
@@ -141,7 +140,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用GitHub令牌进行身份验证
         with:
           tag_name: ${{ github.ref_name }} # 仅获取标签名
-          release_name: "Release ${{ github.ref_name }}"
+          release_name: "Release ${{ github.ref_name }}" # 使用推送的标签名作为发布名称
           body: |
             Changes in this Release
             - First Change
