@@ -13,7 +13,7 @@
 # Reference:
 # https://eugene-babichenko.github.io/blog/2020/05/09/github-actions-cross-platform-auto-releases/
 
-name: default-release
+name: Rust1
 on:
   workflow_call:
   workflow_dispatch:
